@@ -1,18 +1,28 @@
+# app/services/recommendation_service.py
 import math
-from typing import Dict, List, Any, Tuple
-
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy.sql import text
+from collections import defaultdict
 
 
+# ------------------------------
+# Utility functions
+# ------------------------------
 def _wkt_point(lon: float, lat: float) -> str:
     return f"SRID=4326;POINT({lon} {lat})"
 
+def _trending_score(daily_views, weekly_sales):
+    return math.log1p(daily_views or 0) + math.log1p(weekly_sales or 0)
 
-def get_nearby_shops(db: Session, lat: float, lon: float, radius_km: float) -> List[Tuple[dict, float, float, float]]:
-    radius_m = float(radius_km) * 1000.0
-    q = text(
-        """
+def _proximity_factor(distance_km: float) -> float:
+    return 1.0 / (1.0 + (distance_km / 0.5))
+
+
+# ------------------------------
+# Nearby shops (PostGIS)
+# ------------------------------
+def get_nearby_shops_service(db: Session, lat: float, lon: float, radius_km: float = 5.0):
+    q = text("""
         SELECT s.id, s.name, s.address,
                ST_Distance(s.location, ST_GeogFromText(:wkt)) AS distance_m,
                ST_Y(ST_Transform(s.location::geometry, 4326)) AS lat,
@@ -20,33 +30,44 @@ def get_nearby_shops(db: Session, lat: float, lon: float, radius_km: float) -> L
         FROM shops s
         WHERE ST_DWithin(s.location, ST_GeogFromText(:wkt), :radius)
         ORDER BY distance_m
-        LIMIT 200
-        """
-    )
-    rows = db.execute(q, {"wkt": _wkt_point(lon, lat), "radius": radius_m}).mappings().all()
-    result: List[Tuple[dict, float, float, float]] = []
+        LIMIT 200;
+    """)
+
+    rows = db.execute(q, {
+        "wkt": _wkt_point(lon, lat),
+        "radius": float(radius_km) * 1000
+    }).mappings().all()
+
+    out = []
     for r in rows:
-        shop = {"id": r["id"], "name": r["name"], "address": r["address"]}
-        d_km = float(r["distance_m"]) / 1000.0 if r["distance_m"] is not None else None
-        result.append((shop, d_km or 0.0, float(r["lat"]) if r["lat"] is not None else None, float(r["lon"]) if r["lon"] is not None else None))
-    return result
+        out.append({
+            "id": r["id"],
+            "name": r["name"],
+            "address": r["address"],
+            "distance_km": round(float(r["distance_m"]) / 1000, 3),
+            "latitude": float(r["lat"]),
+            "longitude": float(r["lon"])
+        })
+    return out
 
 
-def get_user_top_categories(db: Session, user_id: int) -> Dict[int, float]:
-    q = text(
-        """
+# ------------------------------
+# User category preferences
+# ------------------------------
+def get_user_top_categories(db: Session, user_id: int):
+    q = text("""
         WITH views AS (
             SELECT p.category_id, COUNT(*)::float AS score
             FROM product_view_events e
             JOIN products p ON p.id = e.product_id
-            WHERE e.user_id = :uid AND p.category_id IS NOT NULL
+            WHERE e.user_id = :u AND p.category_id IS NOT NULL
             GROUP BY p.category_id
         ),
         purchases AS (
-            SELECT p.category_id, COALESCE(SUM(GREATEST(pe.quantity,1)) * 2.0, 0)::float AS score
+            SELECT p.category_id, SUM(GREATEST(pe.quantity, 1)) * 2.0 AS score
             FROM purchase_events pe
             JOIN products p ON p.id = pe.product_id
-            WHERE pe.user_id = :uid AND p.category_id IS NOT NULL
+            WHERE pe.user_id = :u AND p.category_id IS NOT NULL
             GROUP BY p.category_id
         ),
         merged AS (
@@ -55,90 +76,97 @@ def get_user_top_categories(db: Session, user_id: int) -> Dict[int, float]:
                 SELECT * FROM views
                 UNION ALL
                 SELECT * FROM purchases
-            ) u
+            ) x
             GROUP BY category_id
         )
         SELECT category_id, score
         FROM merged
-        ORDER BY score DESC
-        """
-    )
-    rows = db.execute(q, {"uid": user_id}).all()
+        ORDER BY score DESC;
+    """)
+
+    rows = db.execute(q, {"u": user_id}).fetchall()
     if not rows:
         return {}
-    max_score = max(r[1] for r in rows) or 1.0
-    return {int(r[0]): float(r[1]) / max_score for r in rows}
+
+    max_score = max(r[1] for r in rows)
+    return {r[0]: float(r[1]) / max_score for r in rows}
 
 
-def _trending_score(daily_views: int, weekly_sales: int) -> float:
-    a, b = 0.6, 0.8
-    dv = max(0, daily_views or 0)
-    ws = max(0, weekly_sales or 0)
-    return a * math.log1p(dv) + b * math.log1p(ws)
-
-
-def _proximity_factor(distance_m: float) -> float:
-    # Closer shops receive higher multiplicative factor; ~500m scale
-    return 1.0 / (1.0 + (float(distance_m) / 500.0))
-
-
-def recommend_products(
-    db: Session,
-    user_id: int,
-    lat: float,
-    lon: float,
-    radius_km: float = 5.0,
-    limit: int = 20,
-):
-    nearby = get_nearby_shops(db, lat, lon, radius_km)
-    if not nearby:
+# ------------------------------
+# Hybrid product recommender
+# ------------------------------
+def recommend_products_hybrid(db: Session, user_id: int, lat: float, lon: float, radius_km: float = 5.0, limit=20):
+    # 1) Nearby shops
+    shops = get_nearby_shops_service(db, lat, lon, radius_km)
+    if not shops:
         return [], []
 
-    shop_ids = [s[0]["id"] for s in nearby]
-    distance_by_shop_km = {s[0]["id"]: s[1] for s in nearby}
+    shop_ids = [s["id"] for s in shops]
+    dist_by_shop = {s["id"]: s["distance_km"] for s in shops}
 
+    # 2) User category preference
     user_cat_weights = get_user_top_categories(db, user_id)
 
-    # Fetch candidate products from nearby shops
-    q = text(
-        """
-        SELECT p.id, p.name, p.category_id, p.shop_id,
-               COALESCE(p.daily_views, 0) AS daily_views,
-               COALESCE(p.weekly_sales, 0) AS weekly_sales
+    # 3) Candidate products (in nearby shops)
+    q = text("""
+        SELECT p.id,
+               p.name,
+               p.category_id,
+               p.shop_id,
+               COALESCE(p.daily_views,0)  AS daily_views,
+               COALESCE(p.weekly_sales,0) AS weekly_sales
         FROM products p
-        WHERE p.shop_id = ANY(:shop_ids)
-        """
-    )
-    rows = db.execute(q, {"shop_ids": shop_ids}).mappings().all()
+        WHERE p.shop_id = ANY(:shops);
+    """)
 
-    recs: List[dict] = []
+    rows = db.execute(q, {"shops": shop_ids}).mappings().all()
+    candidate_ids = [r["id"] for r in rows]
+
+    # 4) CF score via stored KNN similarities
+    cf_scores = {}
+    if candidate_ids:
+        sim_q = text("""
+            SELECT similar_item_id AS cid, MAX(score) AS sc
+            FROM item_similarity
+            WHERE similar_item_id = ANY(:cands)
+            AND item_id IN (
+                SELECT product_id FROM product_view_events WHERE user_id = :u
+                UNION
+                SELECT product_id FROM purchase_events WHERE user_id = :u
+            )
+            GROUP BY similar_item_id;
+        """)
+        sim_rows = db.execute(sim_q, {"cands": candidate_ids, "u": user_id}).fetchall()
+        cf_scores = {r[0]: float(r[1]) for r in sim_rows}
+
+    # 5) Final scoring
+    recs = []
     for r in rows:
-        cat_score = user_cat_weights.get(r["category_id"], 0.0)
-        trending = _trending_score(int(r["daily_views"]), int(r["weekly_sales"]))
-        dist_km = float(distance_by_shop_km.get(r["shop_id"], 10.0))
-        prox = _proximity_factor(dist_km * 1000.0)
-        score = 0.6 * cat_score + 0.3 * trending + 0.1 * prox
+        pid = r["id"]
+        cat = r["category_id"]
+        shop = r["shop_id"]
+
+        cat_score = user_cat_weights.get(cat, 0.0)
+        trending = _trending_score(r["daily_views"], r["weekly_sales"])
+        prox = _proximity_factor(dist_by_shop.get(shop, radius_km))
+        cf = cf_scores.get(pid, 0.0)
+
+        final_score = (
+            0.35 * cat_score +
+            0.25 * (trending / (1 + trending)) +
+            0.10 * prox +
+            0.30 * cf
+        )
 
         recs.append({
-            "product_id": int(r["id"]),
+            "product_id": pid,
             "product_name": r["name"],
-            "shop_id": int(r["shop_id"]),
-            "category_id": int(r["category_id"]) if r["category_id"] is not None else None,
-            "score": float(score),
-            "reasons": ["matches_recent_preferences"] if cat_score > 0 else None,
+            "shop_id": shop,
+            "category_id": cat,
+            "score": final_score,
+            "cf_score": cf
         })
 
     recs.sort(key=lambda x: x["score"], reverse=True)
 
-    shops_out = []
-    for shop, d_km, lat_val, lon_val in nearby:
-        shops_out.append({
-            "id": shop["id"],
-            "name": shop["name"],
-            "address": shop["address"],
-            "distance_km": round(d_km, 3),
-            "latitude": lat_val,
-            "longitude": lon_val,
-        })
-
-    return shops_out, recs[:limit]
+    return shops, recs[:limit]
