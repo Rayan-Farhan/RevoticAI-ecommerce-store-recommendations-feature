@@ -1,7 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional
 
-
 class ShopBase(BaseModel):
     id: int
     name: str
@@ -10,8 +9,4 @@ class ShopBase(BaseModel):
     class Config:
         from_attributes = True
 
-
-class ShopNear(ShopBase):
-    distance_km: float
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
+    # The ShopNear schema has been removed to avoid duplication with ShopOut.
