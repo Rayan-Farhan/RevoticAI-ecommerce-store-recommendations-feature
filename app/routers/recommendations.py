@@ -1,30 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-
 from app.db import get_db
-from app.schemas.recommendation import RecommendationRequest, RecommendationResponse
-from app.schemas.shop import ShopNear
-from app.schemas.product import ProductRecommendation
-from app.services.recommendation_service import recommend_products
+from app.services.recommendation_service import (
+    get_nearby_shops_service,
+    recommend_products_hybrid
+)
+from app.schemas.recommendation import ShopOut, ProductRecommendationsResponse
 
-router = APIRouter(prefix="/api", tags=["recommendations"])
+router = APIRouter(prefix="/recommend", tags=["recommendations"])
 
+@router.get("/shops", response_model=list[ShopOut])
+def get_shops(lat: float, lon: float, radius_km: float = 5.0, db: Session = Depends(get_db)):
+    return get_nearby_shops_service(db, lat, lon, radius_km)
 
-@router.post("/recommendations", response_model=RecommendationResponse)
-def get_recommendations(payload: RecommendationRequest, db: Session = Depends(get_db)):
-    if payload.radius_km <= 0:
-        raise HTTPException(status_code=400, detail="radius_km must be > 0")
-
-    shops_out, recs_out = recommend_products(
-        db=db,
-        user_id=payload.user_id,
-        lat=payload.latitude,
-        lon=payload.longitude,
-        radius_km=payload.radius_km,
-        limit=payload.limit,
-    )
-
-    return RecommendationResponse(
-        nearby_shops=[ShopNear(**s) for s in shops_out],
-        recommendations=[ProductRecommendation(**r) for r in recs_out],
-    )
+@router.get("/products", response_model=ProductRecommendationsResponse)
+def get_products(user_id: int, lat: float, lon: float, radius_km: float = 5.0, limit: int = 20, db: Session = Depends(get_db)):
+    shops, recs = recommend_products_hybrid(db, user_id, lat, lon, radius_km, limit)
+    return ProductRecommendationsResponse(shops=shops, recommended_products=recs)
