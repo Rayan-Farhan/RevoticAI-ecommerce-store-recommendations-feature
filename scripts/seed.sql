@@ -1,6 +1,4 @@
 -- Seed demo data for Grocery Recommendations
--- Safe to re-run; uses WHERE NOT EXISTS guards.
--- Assumes schema.sql already applied.
 
 -- Users
 INSERT INTO users (email, name)
@@ -40,6 +38,14 @@ WHERE NOT EXISTS (SELECT 1 FROM shops WHERE name = 'Fresh Hub');
 INSERT INTO shops (name, address, location)
 SELECT 'Green Basket', 'West End', ST_SetSRID(ST_MakePoint(67.0005,24.8589),4326)::geography
 WHERE NOT EXISTS (SELECT 1 FROM shops WHERE name = 'Green Basket');
+
+INSERT INTO shops (name, address, location)
+SELECT 'Daily Needs', 'Central Avenue', ST_SetSRID(ST_MakePoint(67.0040,24.8615),4326)::geography
+WHERE NOT EXISTS (SELECT 1 FROM shops WHERE name = 'Daily Needs');
+
+INSERT INTO shops (name, address, location)
+SELECT 'MegaMart', 'North Square', ST_SetSRID(ST_MakePoint(67.0100,24.8650),4326)::geography
+WHERE NOT EXISTS (SELECT 1 FROM shops WHERE name = 'MegaMart');
 
 -- Products with analytics fields
 INSERT INTO products (name, category_id, shop_id, daily_views, weekly_sales, last_purchased_at)
@@ -92,7 +98,46 @@ WHERE NOT EXISTS (
   WHERE name='Yogurt Pack' AND shop_id=(SELECT id FROM shops WHERE name='Fresh Hub')
 );
 
--- Create some view events (last few days) for demo user
+INSERT INTO products (name, category_id, shop_id, daily_views, weekly_sales, last_purchased_at)
+SELECT 'Oranges',
+       (SELECT id FROM categories WHERE slug='fruits'),
+       (SELECT id FROM shops WHERE name='Daily Needs'),
+       18, 9, now() - interval '2 days'
+WHERE NOT EXISTS (
+  SELECT 1 FROM products
+  WHERE name='Oranges' AND shop_id=(SELECT id FROM shops WHERE name='Daily Needs')
+);
+
+INSERT INTO products (name, category_id, shop_id, daily_views, weekly_sales, last_purchased_at)
+SELECT 'Spinach Bunch',
+       (SELECT id FROM categories WHERE slug='vegetables'),
+       (SELECT id FROM shops WHERE name='Daily Needs'),
+       10, 4, now() - interval '1 day'
+WHERE NOT EXISTS (
+  SELECT 1 FROM products
+  WHERE name='Spinach Bunch' AND shop_id=(SELECT id FROM shops WHERE name='Daily Needs')
+);
+
+INSERT INTO products (name, category_id, shop_id, daily_views, weekly_sales, last_purchased_at)
+SELECT 'Cheddar Cheese',
+       (SELECT id FROM categories WHERE slug='dairy'),
+       (SELECT id FROM shops WHERE name='MegaMart'),
+       25, 12, now() - interval '3 hours'
+WHERE NOT EXISTS (
+  SELECT 1 FROM products
+  WHERE name='Cheddar Cheese' AND shop_id=(SELECT id FROM shops WHERE name='MegaMart')
+);
+
+INSERT INTO products (name, category_id, shop_id, daily_views, weekly_sales, last_purchased_at)
+SELECT 'Tomatoes',
+       (SELECT id FROM categories WHERE slug='vegetables'),
+       (SELECT id FROM shops WHERE name='MegaMart'),
+       22, 10, now() - interval '8 hours'
+WHERE NOT EXISTS (
+  SELECT 1 FROM products
+  WHERE name='Tomatoes' AND shop_id=(SELECT id FROM shops WHERE name='MegaMart')
+);
+
 INSERT INTO product_view_events (user_id, product_id, created_at)
 SELECT u.id, p.id, now() - (random() * interval '2 days')
 FROM users u, products p
@@ -120,7 +165,6 @@ WHERE u.email = 'demo@user.com' AND p.name = 'Carrots'
     WHERE pve.user_id = u.id AND pve.product_id = p.id
   );
 
--- Create some purchase events
 INSERT INTO purchase_events (user_id, product_id, quantity, price_at_purchase, created_at)
 SELECT u.id, p.id, 1, 120.00, now() - interval '6 hours'
 FROM users u, products p
@@ -139,8 +183,39 @@ WHERE u.email = 'demo@user.com' AND p.name = 'Carrots'
     WHERE pe.user_id = u.id AND pe.product_id = p.id
   );
 
--- Verify counts (optional queries)
--- SELECT COUNT(*) FROM shops;
--- SELECT COUNT(*) FROM products;
--- SELECT COUNT(*) FROM product_view_events;
--- SELECT COUNT(*) FROM purchase_events;
+
+INSERT INTO product_view_events (user_id, product_id, created_at)
+SELECT u.id, p.id, now() - (random() * interval '3 days')
+FROM users u, products p
+WHERE u.email = 'alice@example.com' AND p.name IN ('Bananas','Oranges','Milk 1L')
+  AND NOT EXISTS (
+    SELECT 1 FROM product_view_events pve
+    WHERE pve.user_id = u.id AND pve.product_id = p.id
+  );
+
+INSERT INTO product_view_events (user_id, product_id, created_at)
+SELECT u.id, p.id, now() - (random() * interval '3 days')
+FROM users u, products p
+WHERE u.email = 'bob@example.com' AND p.name IN ('Carrots','Tomatoes','Spinach Bunch')
+  AND NOT EXISTS (
+    SELECT 1 FROM product_view_events pve
+    WHERE pve.user_id = u.id AND pve.product_id = p.id
+  );
+
+INSERT INTO purchase_events (user_id, product_id, quantity, price_at_purchase, created_at)
+SELECT u.id, p.id, 1, 150.00, now() - interval '10 hours'
+FROM users u, products p
+WHERE u.email = 'alice@example.com' AND p.name = 'Oranges'
+  AND NOT EXISTS (
+    SELECT 1 FROM purchase_events pe
+    WHERE pe.user_id = u.id AND pe.product_id = p.id
+  );
+
+INSERT INTO purchase_events (user_id, product_id, quantity, price_at_purchase, created_at)
+SELECT u.id, p.id, 2, 220.00, now() - interval '16 hours'
+FROM users u, products p
+WHERE u.email = 'bob@example.com' AND p.name = 'Tomatoes'
+  AND NOT EXISTS (
+    SELECT 1 FROM purchase_events pe
+    WHERE pe.user_id = u.id AND pe.product_id = p.id
+  );

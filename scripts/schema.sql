@@ -16,6 +16,7 @@ CREATE EXTENSION IF NOT EXISTS postgis;
 
 -- 4) Tables
 
+
 -- Users
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -83,10 +84,28 @@ CREATE INDEX IF NOT EXISTS idx_pe_user_id_created_at ON purchase_events(user_id,
 CREATE INDEX IF NOT EXISTS idx_pve_product_id ON product_view_events(product_id);
 CREATE INDEX IF NOT EXISTS idx_pe_product_id ON purchase_events(product_id);
 
--- 6) Helpful notes
--- Insert a shop (longitude, latitude order):
--- INSERT INTO shops (name, address, location)
--- VALUES (
---   'City Mart', 'Downtown',
---   ST_SetSRID(ST_MakePoint(67.0011, 24.8607), 4326)::geography
--- );
+
+-- === Recommender System Tables ===
+
+-- Item-Item Similarity Table
+CREATE TABLE IF NOT EXISTS item_similarity (
+    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    item_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    similar_item_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    score FLOAT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_item_similarity_item ON item_similarity(item_id);
+
+-- also index by similar_item_id for CF lookup performance
+CREATE INDEX IF NOT EXISTS idx_item_similarity_similar_item ON item_similarity(similar_item_id);
+
+-- User-User Similarity Table
+CREATE TABLE IF NOT EXISTS user_similarity (
+    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    similar_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    score FLOAT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_similarity_user ON user_similarity(user_id);
