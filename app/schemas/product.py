@@ -1,7 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional, List
 
-
 class ProductBase(BaseModel):
     id: int
     name: str
@@ -10,7 +9,6 @@ class ProductBase(BaseModel):
 
     class Config:
         from_attributes = True
-
 
 class ProductRecommendation(BaseModel):
     product_id: int
