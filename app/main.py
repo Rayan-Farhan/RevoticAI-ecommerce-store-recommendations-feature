@@ -16,11 +16,9 @@ app.add_middleware(
 
 app.include_router(recommendations_router)
 
-
 @app.get("/")
 def root():
     return {"status": "ok", "service": "recommendations"}
-
 
 @app.on_event("startup")
 def on_startup():
